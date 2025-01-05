@@ -5,6 +5,9 @@ roles:
 - [osd.12, osd.13, osd.14, osd.15]
 - [osd.16, osd.17, osd.18, osd.19]
 - [osd.20, osd.21, osd.22, osd.23]
+- [osd.24, osd.25, osd.26, osd.27]
+- [osd.28, osd.29, osd.30, osd.31]
+- [osd.32, osd.33, osd.34, osd.35]
 - [client.0]
 
 tasks:
