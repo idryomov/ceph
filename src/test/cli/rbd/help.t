@@ -1833,14 +1833,14 @@
   usage: rbd mirror pool enable [--pool <pool>] [--namespace <namespace>] 
                                 [--site-name <site-name>] 
                                 [--remote-namespace <remote-namespace>] 
-                                <pool-spec> [<mode>] 
+                                <pool-spec> <mode> 
   
   Enable RBD mirroring in a pool or namespace.
   
   Positional arguments
     <pool-spec>            pool specification
                            (example: <pool-name>[/<namespace>]
-    <mode>                 mirror mode [image or pool]
+    <mode>                 mirror mode [image, pool or init-only]
   
   Optional arguments
     -p [ --pool ] arg      pool name

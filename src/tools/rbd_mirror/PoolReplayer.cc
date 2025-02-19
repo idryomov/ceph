@@ -368,7 +368,6 @@ void PoolReplayer<I>::init(const std::string& site_name) {
   m_pool_meta_cache->set_local_pool_meta(
     m_local_io_ctx.get_id(), {m_local_mirror_uuid});
 
-  m_init_done =  true;
   m_leader_watcher.reset(LeaderWatcher<I>::create(m_threads, m_local_io_ctx,
                                                   &m_leader_listener));
   r = m_leader_watcher->init();
@@ -580,6 +579,7 @@ void PoolReplayer<I>::run() {
     if (m_leader_watcher->is_blocklisted()) {
       m_blocklisted = true;
       m_stopping = true;
+      break;
     }
 
     for (auto &it : m_namespace_replayers) {
@@ -613,11 +613,9 @@ void PoolReplayer<I>::update_namespace_replayers() {
   ceph_assert(ceph_mutex_is_locked(m_lock));
 
   std::map<std::string, std::string> mirroring_namespaces;
-  //bool disable_default = false;
   if (!m_stopping) {
     int r = list_mirroring_namespaces(&mirroring_namespaces);
     if (r < 0) {
-    dout(20) << "Nithya - list_mirroring_namespaces r:" << r << dendl;
       return;
     }
   }
@@ -625,7 +623,6 @@ void PoolReplayer<I>::update_namespace_replayers() {
   auto cct = reinterpret_cast<CephContext *>(m_local_io_ctx.cct());
   C_SaferCond cond;
   auto gather_ctx = new C_Gather(cct, &cond);
-  dout(20) << "Nithya - before num m_namespace_replayers:" << m_namespace_replayers.size() << dendl;
   for (auto it = m_namespace_replayers.begin();
        it != m_namespace_replayers.end(); ) {
     auto iter = mirroring_namespaces.find(it->first);
@@ -657,12 +654,11 @@ void PoolReplayer<I>::update_namespace_replayers() {
          ctx=gather_ctx->new_sub()](int r) {
           std::lock_guard locker{m_lock};
           if (r < 0) {
-            derr << "failed to initialize namespace replayer for namespace "
-                 << names.first << ": " << cpp_strerror(r) << dendl;
+            derr << "failed to initialize namespace replayer for namespace '"
+                 << names.first << "': " << cpp_strerror(r) << dendl;
             delete namespace_replayer;
             mirroring_namespaces.erase(names.first);
           } else {
-  dout(20) << "Nithya - adding namespace_replayer:" << names.first << dendl;
             m_namespace_replayers[names.first] = namespace_replayer;
             m_service_daemon->add_namespace(m_local_pool_id, names.first);
           }
@@ -712,98 +708,53 @@ void PoolReplayer<I>::update_namespace_replayers() {
 }
 
 template <typename I>
-bool PoolReplayer<I>::remote_namespace_pair_matches(std::string local_name,
-                                                    std::string remote_name) {
-  std::string pair_namespace;
-  librados::IoCtx remote_ns_ioctx;
-
-  remote_ns_ioctx.dup(m_remote_io_ctx);
-  remote_ns_ioctx.set_namespace(remote_name);
-
-  cls::rbd::MirrorMode mirror_mode = cls::rbd::MIRROR_MODE_DISABLED;
-  int r = librbd::cls_client::mirror_mode_get(&remote_ns_ioctx, &mirror_mode);
-  if (r < 0 && r != -ENOENT) {
-      derr << "failed to get namespace mirror mode: " << cpp_strerror(r)
-           << dendl;
-  } else if (mirror_mode == cls::rbd::MIRROR_MODE_DISABLED) {
-      dout(10) << "mirroring is disabled for remote namespace "
-               << remote_name << dendl;
-      // It doesn't need to wait for the remote namespace.
-      return true;
-  }
-
-  r = librbd::cls_client::mirror_remote_namespace_get(&remote_ns_ioctx,
-                                                      &pair_namespace);
-  if (r < 0) {
-    if (r != -ENOENT && r != -EOPNOTSUPP) {
-      derr << "failed to validate remote mirror namespace data: "
-           << cpp_strerror(r) << dendl;
-    }
-    pair_namespace = remote_name;
-  }
-  if (pair_namespace.compare(local_name)) {
-    dout(10) << "Remote namespace pairing does not match: "
-         << " local pair : " << local_name << " -> " << remote_name
-         << " ,remote pair : " << remote_name << " -> " << pair_namespace
-         <<  dendl;
-    return false;
-  }
-  return true;
-}
-
-template <typename I>
 int PoolReplayer<I>::list_mirroring_namespaces(
     std::map<std::string, std::string> *namespaces) {
   dout(20) << dendl;
   ceph_assert(ceph_mutex_is_locked(m_lock));
 
   std::vector<std::string> names;
-  std::string remote_namespace;
-
-
   int r = librbd::api::Namespace<I>::list(m_local_io_ctx, &names);
   if (r < 0) {
     derr << "failed to list namespaces: " << cpp_strerror(r) << dendl;
     return r;
   }
-  // Include the default ns in the list.
+
+  // handle the default namespace the same way
   names.push_back("");
 
   for (auto &name : names) {
     librados::IoCtx ns_ioctx;
     ns_ioctx.dup(m_local_io_ctx);
     ns_ioctx.set_namespace(name);
+
     cls::rbd::MirrorMode mirror_mode = cls::rbd::MIRROR_MODE_DISABLED;
     int r = librbd::cls_client::mirror_mode_get(&ns_ioctx, &mirror_mode);
     if (r < 0 && r != -ENOENT) {
-      derr << "failed to get namespace mirror mode: " << cpp_strerror(r)
-           << dendl;
+      derr << "failed to get mirror mode for namespace '" << name << "': "
+           << cpp_strerror(r) << dendl;
       if (m_namespace_replayers.count(name) == 0) {
         continue;
       }
     } else if (mirror_mode == cls::rbd::MIRROR_MODE_DISABLED ||
-               mirror_mode == cls::rbd::MIRROR_MODE_CONFIG ) {
+               mirror_mode == cls::rbd::MIRROR_MODE_INIT_ONLY) {
       dout(10) << "mirroring is disabled for namespace " << name << dendl;
       continue;
     }
+
+    std::string remote_namespace;
     r = librbd::cls_client::mirror_remote_namespace_get(&ns_ioctx,
                                                         &remote_namespace);
     if (r < 0) {
       if (r != -ENOENT && r != -EOPNOTSUPP) {
-	derr << "failed to get remote mirror namespace: " << cpp_strerror(r)
-	     << dendl;
+	derr << "failed to get remote namespace for namespace '" << name
+             << "': " << cpp_strerror(r) << dendl;
 	continue;
       } else {
         remote_namespace = name;
       }
     }
-    // Verify that the remote pair matches.
-    if (!remote_namespace_pair_matches(name, remote_namespace)) {
-      derr << "Skipping : remote namespace pairing does not match for "
-           <<  name << " -> " << remote_namespace
-           <<  dendl;
-      continue;
-    }
+
     dout(10) << " local namespace=" << name << ", remote namespace="
              << remote_namespace << dendl;
     namespaces->insert(std::make_pair(name, remote_namespace));
@@ -838,8 +789,8 @@ void PoolReplayer<I>::namespace_replayer_acquire_leader(const std::string &name,
   on_finish = new LambdaContext(
       [this, name, on_finish](int r) {
         if (r < 0) {
-          derr << "failed to handle acquire leader for namespace: "
-               << name << ": " << cpp_strerror(r) << dendl;
+          derr << "failed to handle acquire leader for namespace '"
+               << name << "': " << cpp_strerror(r) << dendl;
 
           // remove the namespace replayer -- update_namespace_replayers will
           // retry to create it and acquire leader.
@@ -929,23 +880,11 @@ void PoolReplayer<I>::print_status(Formatter *f) {
     f->close_section(); // deletion_throttler
   }
 
-  auto default_namespace_replayer = m_namespace_replayers.find("");
-  if (default_namespace_replayer != m_namespace_replayers.end()) {
-    default_namespace_replayer->second->print_status(f);
-  }
-
-  f->open_array_section("namespaces");
+  f->open_array_section("namespace_replayers");
   for (auto &it : m_namespace_replayers) {
-    if (it.second == default_namespace_replayer->second) {
-      continue;
-    }
-    f->open_object_section("namespace");
-    f->dump_string("name", it.first);
-    f->dump_string("remote_namespace", it.second->get_remote_namespace());
     it.second->print_status(f);
-    f->close_section(); // namespace
   }
-  f->close_section(); // namespaces
+  f->close_section(); // namespace_replayers
 
   f->close_section(); // pool_replayer_status
 }
@@ -962,11 +901,6 @@ void PoolReplayer<I>::start() {
 
   m_manual_stop = false;
 
-/*
-  if (m_default_namespace_replayer) {
-    m_default_namespace_replayer->start();
-  }
-*/
   for (auto &it : m_namespace_replayers) {
     it.second->start();
   }
@@ -1048,28 +982,24 @@ void PoolReplayer<I>::handle_post_acquire_leader(Context *on_finish) {
         m_service_daemon->add_or_update_attribute(m_local_pool_id,
                                                   SERVICE_DAEMON_LEADER_KEY,
                                                   true);
-        auto ctx = new LambdaContext(
+        auto ctx = librbd::util::create_async_context_callback(
+          m_threads->work_queue, new LambdaContext(
             [this, on_finish](int r) {
               if (r == 0) {
-  dout(20) << "Nithya - taking lock:" << dendl;
                 std::lock_guard locker{m_lock};
                 m_leader = true;
               }
               on_finish->complete(r);
-            });
+            }));
 
         auto cct = reinterpret_cast<CephContext *>(m_local_io_ctx.cct());
-	if (m_namespace_replayers.size()) {
-	  auto gather_ctx = new C_Gather(cct, ctx);
-	  for (auto &it : m_namespace_replayers) {
-	    namespace_replayer_acquire_leader(it.first, gather_ctx->new_sub());
-	  }
-	  gather_ctx->activate();
-	} else {
- 	   m_leader = true;
-	   on_finish->complete(0);
-	}
+        auto gather_ctx = new C_Gather(cct, ctx);
 
+        for (auto &it : m_namespace_replayers) {
+          namespace_replayer_acquire_leader(it.first, gather_ctx->new_sub());
+        }
+
+        gather_ctx->activate();
       }, on_finish);
 }
 
@@ -1086,9 +1016,11 @@ void PoolReplayer<I>::handle_pre_release_leader(Context *on_finish) {
         m_leader = false;
         m_service_daemon->remove_attribute(m_local_pool_id,
                                            SERVICE_DAEMON_LEADER_KEY);
+        auto ctx = librbd::util::create_async_context_callback(
+          m_threads->work_queue, on_finish);
 
         auto cct = reinterpret_cast<CephContext *>(m_local_io_ctx.cct());
-        auto gather_ctx = new C_Gather(cct, on_finish);
+        auto gather_ctx = new C_Gather(cct, ctx);
 
         for (auto &it : m_namespace_replayers) {
           it.second->handle_release_leader(gather_ctx->new_sub());
@@ -1145,7 +1077,7 @@ void PoolReplayer<I>::handle_remote_pool_meta_updated(
     const RemotePoolMeta& remote_pool_meta) {
   dout(5) << "remote_pool_meta=" << remote_pool_meta << dendl;
 
-  if (!m_init_done) {
+  if (!m_leader_watcher) {
     m_remote_pool_meta = remote_pool_meta;
     return;
   }
