@@ -2468,7 +2468,7 @@ namespace librbd {
     int r = librbd::api::Snapshot<>::list(ictx, snaps);
     if (r >= 0) {
       for (int i = 0, n = snaps.size(); i < n; i++) {
-        tracepoint(librbd, snap_list_entry, snaps[i].id, snaps[i].size, snaps[i].name.c_str());
+	tracepoint(librbd, snap_list_entry, snaps[i].id, snaps[i].size, snaps[i].name.c_str());
       }
     }
     tracepoint(librbd, snap_list_exit, r, snaps.size());
@@ -2691,7 +2691,7 @@ namespace librbd {
     uint64_t from_snap_id = 0;
     if (fromsnapname != nullptr) {
       std::shared_lock image_locker{ictx->image_lock};
-      from_snap_id = ictx->get_snap_id(cls::rbd::UserSnapshotNamespace(), 
+      from_snap_id = ictx->get_snap_id(cls::rbd::UserSnapshotNamespace(),
                                        fromsnapname);
     }
     int r = librbd::api::DiffIterate<>::diff_iterate(ictx, from_snap_id, ofs,
@@ -2721,13 +2721,21 @@ namespace librbd {
     return r;
   }
 
-  int Image::diff_iterate3(uint64_t from_snap_id, uint64_t ofs, uint64_t len,
-                           bool include_parent, bool whole_object,
+  int Image::diff_iterate3(uint64_t from_snap_id,
+                           uint64_t ofs, uint64_t len, uint32_t flags,
                            int (*cb)(uint64_t, size_t, int, void *), void *arg)
   {
+    if ((flags & ~(RBD_DIFF_ITERATE_FLAG_INCLUDE_PARENT |
+                   RBD_DIFF_ITERATE_FLAG_WHOLE_OBJECT)) != 0) {
+      return -EINVAL;
+    }
+
     ImageCtx *ictx = (ImageCtx *)ctx;
+    bool include_parent = flags & RBD_DIFF_ITERATE_FLAG_INCLUDE_PARENT;
+    bool whole_object = flags & RBD_DIFF_ITERATE_FLAG_WHOLE_OBJECT;
     return librbd::api::DiffIterate<>::diff_iterate(ictx, from_snap_id,
-                                                    ofs, len, include_parent,whole_object, cb, arg);                                                
+                                                    ofs, len, include_parent,
+                                                    whole_object, cb, arg);
   }
 
   ssize_t Image::write(uint64_t ofs, size_t len, bufferlist& bl)
@@ -6202,12 +6210,11 @@ extern "C" int rbd_diff_iterate(rbd_image_t image,
   uint64_t from_snap_id = 0;
   if (fromsnapname != nullptr) {
     std::shared_lock image_locker{ictx->image_lock};
-    from_snap_id = ictx->get_snap_id(cls::rbd::UserSnapshotNamespace(), 
+    from_snap_id = ictx->get_snap_id(cls::rbd::UserSnapshotNamespace(),
                                      fromsnapname);
   }
-  int r = librbd::api::DiffIterate<>::diff_iterate(ictx, from_snap_id, 
-                                                   ofs, len, true,
-                                                   false, cb, arg);
+  int r = librbd::api::DiffIterate<>::diff_iterate(ictx, from_snap_id, ofs,
+                                                   len, true, false, cb, arg);
   tracepoint(librbd, diff_iterate_exit, r);
   return r;
 }
@@ -6228,23 +6235,29 @@ extern "C" int rbd_diff_iterate2(rbd_image_t image, const char *fromsnapname,
     from_snap_id = ictx->get_snap_id(cls::rbd::UserSnapshotNamespace(),
                                      fromsnapname);
   }
-  int r = librbd::api::DiffIterate<>::diff_iterate(ictx, from_snap_id, 
-                                                   ofs, len, include_parent, 
+  int r = librbd::api::DiffIterate<>::diff_iterate(ictx, from_snap_id,
+                                                   ofs, len, include_parent,
                                                    whole_object, cb, arg);
   tracepoint(librbd, diff_iterate_exit, r);
   return r;
 }
 
 extern "C" int rbd_diff_iterate3(rbd_image_t image, uint64_t from_snap_id,
-                                 uint64_t ofs, uint64_t len,
-                                 uint8_t include_parent, uint8_t whole_object,
+                                 uint64_t ofs, uint64_t len, uint32_t flags,
                                  int (*cb)(uint64_t, size_t, int, void *),
                                  void *arg)
 {
+  if ((flags & ~(RBD_DIFF_ITERATE_FLAG_INCLUDE_PARENT |
+                 RBD_DIFF_ITERATE_FLAG_WHOLE_OBJECT)) != 0) {
+    return -EINVAL;
+  }
+
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
-  return librbd::api::DiffIterate<>::diff_iterate(ictx, from_snap_id, 
-                                                   ofs, len, include_parent,
-                                                   whole_object, cb, arg);
+  bool include_parent = flags & RBD_DIFF_ITERATE_FLAG_INCLUDE_PARENT;
+  bool whole_object = flags & RBD_DIFF_ITERATE_FLAG_WHOLE_OBJECT;
+  return librbd::api::DiffIterate<>::diff_iterate(ictx, from_snap_id,
+                                                  ofs, len, include_parent,
+                                                  whole_object, cb, arg);
 }
 
 extern "C" ssize_t rbd_write(rbd_image_t image, uint64_t ofs, size_t len,

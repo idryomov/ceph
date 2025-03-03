@@ -20,10 +20,11 @@ class DiffIterate {
 public:
   typedef int (*Callback)(uint64_t, size_t, int, void *);
 
-  static int diff_iterate(ImageCtxT *ictx,
-			  uint64_t from_snap_id, uint64_t off, uint64_t len,
-                          bool include_parent, bool whole_object,
-		          int (*cb)(uint64_t, size_t, int, void *), void *arg);
+  static int diff_iterate(ImageCtxT *ictx, uint64_t from_snap_id,
+                          uint64_t off, uint64_t len, bool include_parent,
+                          bool whole_object,
+		          int (*cb)(uint64_t, size_t, int, void *),
+		          void *arg);
 
 private:
   ImageCtxT &m_image_ctx;
@@ -35,8 +36,8 @@ private:
   Callback m_callback;
   void *m_callback_arg;
 
-  DiffIterate(ImageCtxT &image_ctx, 
-	      uint64_t from_snap_id, uint64_t off, uint64_t len,
+  DiffIterate(ImageCtxT &image_ctx, uint64_t from_snap_id,
+	      uint64_t off, uint64_t len,
 	      bool include_parent, bool whole_object, Callback callback,
 	      void *callback_arg)
     : m_image_ctx(image_ctx),

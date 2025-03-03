@@ -258,7 +258,7 @@ int DiffIterate<I>::diff_iterate(I *ictx, uint64_t from_snap_id,
   }
 
   DiffIterate command(*ictx, from_snap_id, off, len,
-                      include_parent, whole_object, cb, arg);
+		      include_parent, whole_object, cb, arg);
   r = command.execute();
   return r;
 }
@@ -299,16 +299,17 @@ int DiffIterate<I>::execute() {
   uint64_t end_size;
   {
     std::shared_lock image_locker{m_image_ctx.image_lock};
-    if(from_snap_id != 0 ){
-      from_size = m_image_ctx.get_image_size(from_snap_id);
+    if (from_snap_id != 0) {
+      auto info = m_image_ctx.get_snap_info(from_snap_id);
+      if (info == nullptr) {
+        return -ENOENT;
+      }
+      from_size = info->size;
     }
     end_snap_id = m_image_ctx.snap_id;
     end_size = m_image_ctx.get_image_size(end_snap_id);
   }
 
-  if (from_snap_id == CEPH_NOSNAP) {
-    return -ENOENT;
-  }
   if (from_snap_id > end_snap_id) {
     return -EINVAL;
   }

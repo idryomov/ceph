@@ -4102,14 +4102,15 @@ cdef class Image(object):
         Raises :class:`InvalidArgument` if from_snapshot is after
         the currently set snapshot.
 
-        Raises :class:`ImageNotFound` if from_snapshot is not the name
+        Raises :class:`ImageNotFound` if from_snapshot is not the name or id
         of a snapshot of the image.
 
         :param offset: start offset in bytes
         :type offset: int
         :param length: size of region to report on, in bytes
         :type length: int
-        :param from_snapshot: starting snapshot name or id, or None
+        :param from_snapshot: starting snapshot name or id, or None to
+                              get all allocated extents
         :type from_snapshot: str or int
         :param iterate_cb: function to call for each extent
         :type iterate_cb: function acception arguments for offset,
@@ -4124,25 +4125,22 @@ cdef class Image(object):
         cdef:
             char *_from_snap_name = NULL
             uint64_t _from_snap_id = 0
-            char *_from_snapshot
             uint64_t _offset = offset, _length = length
             uint8_t _include_parent = include_parent
             uint8_t _whole_object = whole_object
-            
+            uint32_t _flags = 0
+
         if from_snapshot is not None:
             if isinstance(from_snapshot, str):
                 from_snap_name = cstr(from_snapshot, 'from_snapshot')
                 _from_snap_name = from_snap_name
-
             elif isinstance(from_snapshot, int):
                 from_snap_name = None
                 _from_snap_id = from_snapshot
-                
             else:
                 raise TypeError("from_snapshot must be a string or an integer")
         else:
             from_snap_name = None
-            _from_snap_id = 0
 
         if from_snap_name is not None:
             with nogil:
@@ -4150,12 +4148,19 @@ cdef class Image(object):
                                         _length, _include_parent, _whole_object,
                                         &diff_iterate_cb, <void *>iterate_cb)
         else:
+            if include_parent:
+                _flags |= _RBD_DIFF_ITERATE_FLAG_INCLUDE_PARENT
+            if whole_object:
+                _flags |= _RBD_DIFF_ITERATE_FLAG_WHOLE_OBJECT
             with nogil:
                 ret = rbd_diff_iterate3(self.image, _from_snap_id, _offset,
-                                        _length, _include_parent, _whole_object,
-                                        &diff_iterate_cb, <void *>iterate_cb)
+                                        _length, _flags, &diff_iterate_cb,
+                                        <void *>iterate_cb)
         if ret < 0:
-            msg = f"Error generating diff from snapshot {from_snapshot}"
+            if from_snap_name is not None:
+                msg = 'error generating diff from snapshot %s' % from_snapshot
+            else:
+                msg = 'error generating diff from snapshot id %d' % _from_snap_id
             raise make_ex(ret, msg)
 
     @requires_not_closed
