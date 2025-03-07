@@ -15,6 +15,7 @@ from assertions import (assert_equal as eq, assert_raises, assert_not_equal,
                         assert_greater_equal)
 from datetime import datetime, timedelta
 from rados import (Rados,
+                   LIBRADOS_SNAP_HEAD,
                    LIBRADOS_OP_FLAG_FADVISE_DONTNEED,
                    LIBRADOS_OP_FLAG_FADVISE_NOCACHE,
                    LIBRADOS_OP_FLAG_FADVISE_RANDOM)
