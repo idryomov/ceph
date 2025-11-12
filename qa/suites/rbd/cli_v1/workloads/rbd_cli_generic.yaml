@@ -1,3 +1,9 @@
+overrides:
+  ceph:
+    conf:
+      global:
+        debug rbd: 20
+        log to stderr: false
 tasks:
 - workunit:
     clients:

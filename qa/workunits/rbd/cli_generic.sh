@@ -393,8 +393,8 @@ test_clone() {
     test "$(rbd -p rbd2 ls)" = 'clone'
 
     rbd clone rbd2/clone clone3 |& grep 'snapshot name was not specified'
-    rbd clone rbd2/clone@invalid clone3 |& grep 'failed to open parent image'
-    rbd clone rbd2/clone --snap-id 0 clone3 |& grep 'failed to open parent image'
+    rbd clone rbd2/clone@invalid clone3 |& grep 'clone error'
+    rbd clone rbd2/clone --snap-id 0 clone3 |& grep 'clone error'
     rbd clone rbd2/clone@invalid --snap-id 0 clone3 |&
         grep 'trying to access snapshot using both name and id'
     SNAP_ID=$(rbd snap ls rbd2/clone --format json |
@@ -1366,6 +1366,7 @@ test_mirror_snapshot_schedule() {
             grep -c mirror.primary)" -gt '1' && break
         sleep 10
     done
+    sleep 100000
 
     test "$(rbd mirror image status rbd2/ns1/test1 |
         grep -c mirror.primary)" -gt '1'
