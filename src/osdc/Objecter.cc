@@ -790,7 +790,6 @@ void Objecter::linger_cancel(LingerOp *info)
 {
   unique_lock wl(rwlock);
   _linger_cancel(info);
-  info->put();
 }
 
 void Objecter::_linger_cancel(LingerOp *info)
@@ -853,7 +852,6 @@ auto Objecter::linger_register(const object_t& oid,
   linger_ops_set.insert(info);
   ceph_assert(linger_ops.size() == linger_ops_set.size());
 
-  info->get(); // for the caller
   return info;
 }
 
