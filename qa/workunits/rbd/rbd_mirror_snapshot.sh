@@ -603,7 +603,6 @@ if [ -z "${RBD_MIRROR_USE_RBD_MIRROR}" ]; then
   demote_image ${CLUSTER2} ${POOL} ${demote_image}
   get_newest_complete_mirror_snapshot_id ${CLUSTER2} ${POOL} ${demote_image} primary_snap_id
   wait_for_non_primary_snap_present ${CLUSTER1} ${POOL} ${demote_image} ${primary_snap_id}
-  sleep $((RANDOM % 6))
   stop_mirrors ${CLUSTER1} -KILL
   SNAPS=$(get_snaps_json ${CLUSTER1} ${POOL} ${demote_image})
   jq -e '.[-1].namespace["type"] == "mirror" and .[-1].namespace["state"] == "demoted" and .[-1].namespace["complete"] == false' <<< ${SNAPS}
@@ -633,7 +632,7 @@ create_snapshot ${CLUSTER2} ${POOL} ${force_promote_image} 'snap1'
 write_image ${CLUSTER2} ${POOL} ${force_promote_image} 2560 4194304
 mirror_image_snapshot ${CLUSTER2} ${POOL} ${force_promote_image}
 wait_for_snap_present ${CLUSTER1} ${POOL} ${force_promote_image} 'snap1'
-sleep $((1 + RANDOM % 5))
+sleep 1
 stop_mirrors ${CLUSTER1} -KILL
 SNAPS=$(get_snaps_json ${CLUSTER1} ${POOL} ${force_promote_image})
 jq -e '.[-1].namespace["type"] == "mirror" and .[-1].namespace["state"] == "non-primary" and .[-1].namespace["complete"] == false' <<< ${SNAPS}
