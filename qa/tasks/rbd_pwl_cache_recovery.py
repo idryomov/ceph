@@ -35,6 +35,7 @@ def thrashes_rbd_bench_on_persistent_cache(ctx, config):
         # rbd bench could not specify the run time so set a large enough test size.
         remote.run(
             args=[
+                'PMEMOBJ_CONF=sds.at_create=0',
                 'rbd', 'bench',
                 '--io-type', 'write',
                 '--io-pattern', random.choice(IO_PATTERNS),
