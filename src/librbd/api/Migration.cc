@@ -529,16 +529,39 @@ int Migration<I>::prepare_import(
                  << dest_io_ctx.get_pool_name() << "/"
                  << dest_image_name << ", opts=" << opts << dendl;
 
+  std::string sanitized_source_spec = source_spec;
+  // use json-spirit to clean-up json formatting
+  json_spirit::mObject source_spec_object;
+  json_spirit::mValue json_root;
+  if(json_spirit::read(source_spec, json_root)) {
+    try {
+      source_spec_object = json_root.get_obj();
+    } catch (std::runtime_error&) {
+      lderr(cct) << "failed to clean source spec" << dendl;
+      return -EINVAL;
+    }
+  }
+  bool format_with_secret_key = false;
+  int r = migration::NativeFormat<I>::validate_spec(
+                     source_spec_object, dest_io_ctx, format_with_secret_key);
+  if (r == 0) {
+     ldout(cct, 5) << "source spec: format with secret key "
+                   << format_with_secret_key << dendl;
+  } else {
+    lderr(cct) << "failed to validate the source spec format:"
+               << cpp_strerror(r) << dendl;
+    return -EINVAL;
+  }
   I* src_image_ctx;
   librados::Rados* src_rados;
   C_SaferCond open_ctx;
   auto req = migration::OpenSourceImageRequest<I>::create(
     dest_io_ctx, nullptr, CEPH_NOSNAP,
-    {-1, "", "", "", source_spec, {}, 0, false}, &src_image_ctx, &src_rados,
+    {-1, "", "", "", sanitized_source_spec, {}, 0, false}, &src_image_ctx, &src_rados,
     &open_ctx);
   req->send();
 
-  int r = open_ctx.wait();
+  r = open_ctx.wait();
   if (r < 0) {
     lderr(cct) << "failed to open source image: " << cpp_strerror(r) << dendl;
     return r;
@@ -560,18 +583,6 @@ int Migration<I>::prepare_import(
   }
 
   ldout(cct, 20) << "updated opts=" << opts << dendl;
-
-  // use json-spirit to clean-up json formatting
-  json_spirit::mObject source_spec_object;
-  json_spirit::mValue json_root;
-  if(json_spirit::read(source_spec, json_root)) {
-    try {
-      source_spec_object = json_root.get_obj();
-    } catch (std::runtime_error&) {
-      lderr(cct) << "failed to clean source spec" << dendl;
-      return -EINVAL;
-    }
-  }
 
   auto dst_image_ctx = I::create(
     dest_image_name, util::generate_image_id(dest_io_ctx), nullptr,
@@ -643,9 +654,8 @@ int Migration<I>::execute(librados::IoCtx& io_ctx,
                       opts, &prog_ctx);
   r = migration.execute();
   if (r < 0) {
-    return r;
+      return r;
   }
-
   return 0;
 }
 
@@ -1141,7 +1151,6 @@ int Migration<I>::commit() {
       m_src_image_ctx->state->close();
     }
   } BOOST_SCOPE_EXIT_END;
-
   int r = remove_migration(m_dst_image_ctx);
   if (r < 0) {
     return r;
