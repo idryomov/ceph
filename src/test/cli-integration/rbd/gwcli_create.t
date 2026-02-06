@@ -61,6 +61,7 @@ Create the second gateway
   > fi
   $ sudo $CENGINE exec $ISCSI_CONTAINER gwcli ls iscsi-targets/ | grep 'o- gateways' | awk -F'[' '{print $2}'
   Up: 2/2, Portals: 2]
+  $ sleep 10000
 
 Attach the disk
 ===============
