@@ -11,6 +11,8 @@ import pytest
 import time
 import sys
 
+sys.excepthook = sys.__excepthook__
+
 from assertions import (assert_equal as eq, assert_raises, assert_not_equal,
                         assert_greater_equal)
 from datetime import datetime, timedelta
