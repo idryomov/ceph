@@ -32,6 +32,7 @@ const std::string IMAGE_NAME_KEY{"image_name"};
 const std::string IMAGE_ID_KEY{"image_id"};
 const std::string SNAP_NAME_KEY{"snap_name"};
 const std::string SNAP_ID_KEY{"snap_id"};
+
 const std::string SECRET_KEY{"key"};
 const std::string MON_HOST_KEY{"mon_host"};
 } // anonymous namespace
@@ -61,50 +62,6 @@ bool NativeFormat<I>::is_source_spec(
 }
 
 template <typename I>
-int NativeFormat<I>::validate_spec(
-             json_spirit::mObject& source_spec_object,
-             librados::IoCtx& dest_io_ctx, bool& format_with_secret_key) {
-  std::string secret_key;
-  std::string mon_host;
-  auto cct = reinterpret_cast<CephContext *>(dest_io_ctx.cct());
-  auto it = source_spec_object.find(MON_HOST_KEY);
-  if (it != source_spec_object.end()) {
-    try {
-      mon_host = it->second.get_str();
-    } catch (std::runtime_error&) {
-      lderr(cct) << "invalid mon host" << dendl;
-      return -EINVAL;
-    }
-    ldout(cct, 5) << "found mon host in source spec " << mon_host << dendl;
-    it = source_spec_object.find(SECRET_KEY);
-    if (it != source_spec_object.end()) {
-      try {
-        secret_key = it->second.get_str();
-        if (util::is_config_key_uri(secret_key)) {
-          ldout(cct, 5) << "found uri prefix key in source spec "
-                        << secret_key <<  dendl;
-        }
-      } catch (std::runtime_error&) {
-        lderr(cct) << "invalid key" << dendl;
-        return -EINVAL;
-      }
-    } else {
-      lderr(cct) << "key must present in the spec" << dendl;
-      return -EINVAL;
-    }
-    it = source_spec_object.find(CLUSTER_NAME_KEY);
-    if (it != source_spec_object.end()) {
-      lderr(cct) << "cannot specify both cluster name and mon host" << dendl;
-      return -EINVAL;
-    }
-    format_with_secret_key = true;
-  } else {
-     format_with_secret_key = false;
-  }
-  return 0;
-}
-
-template <typename I>
 int NativeFormat<I>::create_image_ctx(
     librados::IoCtx& dst_io_ctx,
     const json_spirit::mObject& source_spec_object,
@@ -112,6 +69,8 @@ int NativeFormat<I>::create_image_ctx(
     librados::Rados** src_rados) {
   auto cct = reinterpret_cast<CephContext*>(dst_io_ctx.cct());
   std::string cluster_name;
+  std::string mon_host;
+  std::string secret_key;
   std::string client_name;
   std::string pool_name;
   int64_t pool_id = -1;
@@ -121,7 +80,34 @@ int NativeFormat<I>::create_image_ctx(
   std::string snap_name;
   uint64_t snap_id = CEPH_NOSNAP;
   int r;
-  auto it_mon_host = source_spec_object.find(MON_HOST_KEY);
+
+  if (auto it = source_spec_object.find(MON_HOST_KEY);
+      it != source_spec_object.end()) {
+    if (it->second.type() == json_spirit::str_type) {
+      mon_host = it->second.get_str();
+    } else {
+      lderr(cct) << "invalid mon host" << dendl;
+      return -EINVAL;
+    }
+  }
+
+  if (auto it = source_spec_object.find(SECRET_KEY);
+      it != source_spec_object.end()) {
+    if (it->second.type() == json_spirit::str_type) {
+      secret_key = it->second.get_str();
+    } else {
+      lderr(cct) << "invalid key" << dendl;
+      return -EINVAL;
+    }
+  }
+
+  if (!mon_host.empty() && secret_key.empty()) {
+    lderr(cct) << "cannot specify mon host without key" << dendl;
+    return -EINVAL;
+  } else if (mon_host.empty() && !secret_key.empty()) {
+    lderr(cct) << "cannot specify key without mon host" << dendl;
+    return -EINVAL;
+  }
 
   if (auto it = source_spec_object.find(CLUSTER_NAME_KEY);
       it != source_spec_object.end()) {
@@ -131,14 +117,17 @@ int NativeFormat<I>::create_image_ctx(
       lderr(cct) << "invalid cluster name" << dendl;
       return -EINVAL;
     }
+    if (!mon_host.empty()) {
+      lderr(cct) << "cannot specify both cluster name and mon host" << dendl;
+      return -EINVAL;
+    }
   }
 
   if (auto it = source_spec_object.find(CLIENT_NAME_KEY);
       it != source_spec_object.end()) {
-    if (cluster_name.empty() &&
-        it_mon_host == source_spec_object.end()) {
-      lderr(cct) << "cannot specify client name without cluster name and secret key"
-      << dendl;
+    if (cluster_name.empty() && mon_host.empty()) {
+      lderr(cct) << "cannot specify client name without cluster name or mon host"
+                 << dendl;
       return -EINVAL;
     }
     if (it->second.type() == json_spirit::str_type) {
@@ -259,85 +248,79 @@ int NativeFormat<I>::create_image_ctx(
   if (src_snap_id != CEPH_NOSNAP) {
     snap_id = src_snap_id;
   }
-  bool to_connect = true;
-  std::unique_ptr<librados::Rados> rados_ptr;
-  CephInitParameters iparams(CEPH_ENTITY_TYPE_CLIENT);
-  auto remote_cct = common_preinit(iparams, CODE_ENVIRONMENT_LIBRARY, 0);
-  auto put_remote_cct = make_scope_guard([remote_cct] { remote_cct->put(); });
 
-  if (!cluster_name.empty()) {
+  std::unique_ptr<librados::Rados> rados_ptr;
+  if (!cluster_name.empty() || !mon_host.empty()) {
     // manually bootstrap a CephContext, skipping reading environment
     // variables for now -- since we don't have access to command line
     // arguments here, the least confusing option is to limit initial
     // remote cluster config to a file in the default location
-    // TODO: support specifying mon_host and key via source spec
     // TODO: support merging in effective local cluster config to get
     // overrides for log levels, etc
+    CephInitParameters iparams(CEPH_ENTITY_TYPE_CLIENT);
     if (!client_name.empty() && !iparams.name.from_str(client_name)) {
       lderr(cct) << "failed to set remote client name" << dendl;
       return -EINVAL;
     }
 
-    remote_cct->_conf->cluster = cluster_name;
+    auto remote_cct = common_preinit(iparams, CODE_ENVIRONMENT_LIBRARY, 0);
+    auto put_remote_cct = make_scope_guard([remote_cct] { remote_cct->put(); });
+    if (!cluster_name.empty()) {
+      remote_cct->_conf->cluster = cluster_name;
 
-    // pass CEPH_CONF_FILE_DEFAULT instead of nullptr to prevent
-    // CEPH_CONF environment variable from being picked up
-    r = remote_cct->_conf.parse_config_files(CEPH_CONF_FILE_DEFAULT, nullptr,
-                                             0);
-    if (r < 0) {
-      remote_cct->_conf.complain_about_parse_error(cct);
-      lderr(cct) << "failed to read ceph conf for remote cluster: "
-                 << cpp_strerror(r) << dendl;
-      return r;
-    }
-  } else if (it_mon_host != source_spec_object.end()) {
-     std::string mon_host;
-     std::string mig_key;
-     mon_host = source_spec_object.at(MON_HOST_KEY).get_str();
-     mig_key = source_spec_object.at(SECRET_KEY).get_str();
-     ldout(cct, 5) << "open image ctx: found mon-host in source spec "
-                   << mon_host << dendl;
-     librados::Rados dest_rados(dst_io_ctx);
-     if (util::is_config_key_uri(mig_key)) {
-       std::string mig_ref = mig_key;
-       r = util::get_config_key(dest_rados, mig_ref, &mig_key);
-       if (r < 0) {
-         lderr(cct) << "failed to fetch the key from the monitor KV by ref : "
-                    << mig_ref << " error : " << cpp_strerror(r) << dendl;
-         return r;
-       }
-       ldout(cct, 5) << "fetched the secret key from the monitor KV by ref : "
-                     << mig_ref << dendl;
-     }
-     r = remote_cct->_conf.set_val(SECRET_KEY, mig_key);
-     if (r != 0) {
-       lderr(cct) << "failed to set_val " << SECRET_KEY << ": "
-                  << cpp_strerror(r) << dendl;
-       return r;
-     }
-     r = remote_cct->_conf.set_val(MON_HOST_KEY, mon_host);
-     if (r != 0) {
-       lderr(cct) << "failed to set_val " << MON_HOST_KEY
-                  << " res : " << cpp_strerror(r) << dendl;
-       return r;
-      }
-    } else {
-       rados_ptr.reset(new librados::Rados(dst_io_ctx));
-       to_connect = false;
-    }
-    if (to_connect) {
-      remote_cct->_conf.apply_changes(nullptr);
-      rados_ptr.reset(new librados::Rados());
-      r = rados_ptr->init_with_context(remote_cct);
-      ceph_assert(r == 0);
-      ldout(cct, 5) << "going to connect to remote cluster" <<dendl;
-      r = rados_ptr->connect();
+      // pass CEPH_CONF_FILE_DEFAULT instead of nullptr to prevent
+      // CEPH_CONF environment variable from being picked up
+      r = remote_cct->_conf.parse_config_files(CEPH_CONF_FILE_DEFAULT, nullptr,
+                                               0);
       if (r < 0) {
-        lderr(cct) << "failed to connect to remote cluster: " << cpp_strerror(r)
-                   << dendl;
+        remote_cct->_conf.complain_about_parse_error(cct);
+        lderr(cct) << "failed to read ceph conf for remote cluster: "
+                   << cpp_strerror(r) << dendl;
         return r;
       }
+    } else if (!mon_host.empty()) {
+      ldout(cct, 5) << "found mon host in source spec: " << mon_host << dendl;
+      if (util::is_config_key_uri(secret_key)) {
+        ldout(cct, 5) << "found key ref in source spec: " << secret_key << dendl;
+        librados::Rados dest_rados(dst_io_ctx);
+        r = util::get_config_key(dest_rados, secret_key, &secret_key);
+        if (r < 0) {
+          lderr(cct) << "failed to retrieve secret key: " << cpp_strerror(r)
+                     << dendl;
+          return r;
+        }
+      }
+      r = remote_cct->_conf.set_val(SECRET_KEY, secret_key);
+      if (r != 0) {
+        lderr(cct) << "failed to set_val " << SECRET_KEY << ": "
+                   << cpp_strerror(r) << dendl;
+        return r;
+      }
+      r = remote_cct->_conf.set_val(MON_HOST_KEY, mon_host);
+      if (r != 0) {
+        lderr(cct) << "failed to set_val " << MON_HOST_KEY << ": "
+                   << cpp_strerror(r) << dendl;
+        return r;
+      }
+    }
+
+    remote_cct->_conf.apply_changes(nullptr);
+
+    rados_ptr.reset(new librados::Rados());
+    r = rados_ptr->init_with_context(remote_cct);
+    ceph_assert(r == 0);
+
+    ldout(cct, 5) << "going to connect to remote cluster" <<dendl;
+    r = rados_ptr->connect();
+    if (r < 0) {
+      lderr(cct) << "failed to connect to remote cluster: " << cpp_strerror(r)
+                 << dendl;
+      return r;
+    }
+  } else {
+    rados_ptr.reset(new librados::Rados(dst_io_ctx));
   }
+
   librados::IoCtx src_io_ctx;
   if (!pool_name.empty()) {
     r = rados_ptr->ioctx_create(pool_name.c_str(), src_io_ctx);
@@ -349,6 +332,7 @@ int NativeFormat<I>::create_image_ctx(
                << dendl;
     return r;
   }
+
   src_io_ctx.set_namespace(pool_namespace);
 
   if (!snap_name.empty() && snap_id == CEPH_NOSNAP) {
@@ -358,11 +342,13 @@ int NativeFormat<I>::create_image_ctx(
     *src_image_ctx = I::create(image_name, image_id, snap_id, src_io_ctx,
                                true);
   }
-  if (to_connect) {
+
+  if (!cluster_name.empty() || !mon_host.empty()) {
     *src_rados = rados_ptr.release();
   } else {
     *src_rados = nullptr;
   }
+
   return 0;
 }
 

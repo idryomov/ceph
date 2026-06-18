@@ -30,11 +30,6 @@ public:
                               bool import_only, uint64_t src_snap_id,
                               ImageCtxT** src_image_ctx,
                               librados::Rados** src_rados);
-
-  static int validate_spec(
-             json_spirit::mObject& source_spec_object,
-             librados::IoCtx& dest_io_ctx, bool& format_with_secret_key);
-
 };
 
 } // namespace migration
